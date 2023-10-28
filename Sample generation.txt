@@ -1,3 +1,103 @@
+var roi = LL;
+function rmS2cloud(image) {
+  var qa = image.select('QA60');
+
+//去云 
+  var cloudBitMask = 1 << 10;
+  var cirrusBitMask = 1 << 11;
+
+  var mask = qa.bitwiseAnd(cloudBitMask).eq(0)
+      .and(qa.bitwiseAnd(cirrusBitMask).eq(0));
+
+  return image.updateMask(mask).toDouble()//.divide(10000)
+              .copyProperties(image)
+              .copyProperties(image, ["system:time_start", "system:time_end"])
+}
+
+var S2_BANDS  = ['B2',   'B3',    'B4',  'B8',  'B11',   'B12']; // Sentinel-2
+
+var S2Collection = ee.ImageCollection('COPERNICUS/S2_SR')//.filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE',50))
+                .filterDate('2020-01-01', '2020-12-31')
+                .filterBounds(roi)
+                .map(rmS2cloud)
+                .median()
+                .clip(roi);
+                
+var LL_clipped = S2Collection.clipToCollection(LL);
+
+Map.addLayer(LL_clipped, {'min':0,'max':3000,'bands':['B4','B3','B2']},'S2Collection');
+Map.addLayer(LL,{"color":'Grey',},'Region',false);
+
+  var NDVI = LL_clipped.normalizedDifference(['B8', 'B4']).rename ('NDVI');
+
+  var EVI = LL_clipped.expression('2.5 * ((NIR - RED) / (NIR + 6 * RED - 7.5 * BLUE + 10000))', {
+        'NIR': LL_clipped.select('B8'),
+        'RED': LL_clipped.select('B4'),
+        'BLUE': LL_clipped.select('B2')})
+        .rename('EVI').float();
+var SAVI = LL_clipped.expression(
+      '(1 + L) * float(nir - red)/ (nir + red + L)', {
+        'nir': LL_clipped.select('B8'),
+        'red': LL_clipped.select('B4'),
+        'L': 0.2
+      })
+        .rename('SAVI').float();
+// calculate RVI
+  var RVI = LL_clipped.expression('(REDe / RED)', {
+        'REDe': LL_clipped.select('B8A'),
+        'RED': LL_clipped.select('B4')})
+        .rename('RVI').float();
+// calculate DVI
+  var DVI = LL_clipped.expression('(REDe - RED)', {
+        'REDe': LL_clipped.select('B8A'),
+        'RED': LL_clipped.select('B4')})
+        .rename('DVI').float();
+
+  var LSWI = LL_clipped.normalizedDifference(['B8','B12']).rename ('LSWI');  
+  var NDBI = LL_clipped.normalizedDifference(['B12','B8']).rename ('NDBI');
+  var NDWI = LL_clipped.normalizedDifference(['B3','B8']).rename ('NDWI');
+  var NDWI1 = LL_clipped.normalizedDifference(['B3','B8A']).rename ('NDWI1');
+  var MNDWI = LL_clipped.normalizedDifference(['B3', 'B11']).rename ('MNDWI');
+             
+var collectionS1=ee.ImageCollection('COPERNICUS/S1_GRD')
+.filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
+
+.filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VH'));
+
+var collectionS1_IW=collectionS1
+
+.filterBounds(LL)
+
+.filterMetadata('instrumentMode','equals','IW')
+
+.filterDate('2020-01-01', '2020-12-31');
+
+var Sentinel_1=collectionS1_IW.median().clip(LL);
+
+//获取SRTMGL1_003 数据
+var dataset = ee.Image('USGS/SRTMGL1_003')
+                .clip(roi);
+var terrain = ee.Algorithms.Terrain(dataset);
+
+
+var LL_clipped1=ee.Image.cat([LL_clipped,terrain,Sentinel_1]).float().clip(LL)
+       
+var composite_add = LL_clipped1.addBands(NDVI)
+                                .addBands(NDWI)
+                                .addBands(LSWI)
+                                .addBands(EVI)
+                                .addBands(NDBI)
+                                .addBands(RVI)
+                                .addBands(DVI)
+                                .addBands(NDWI1)
+                                .addBands(MNDWI)
+                                .addBands(SAVI)
+
+
+var bands = ['NDVI','NDWI','EVI','LSWI','NDBI','RVI','DVI','SAVI',
+'MNDWI','B1','B2', 'B3', 'B4', 'B5', 'B6', 
+'B7','B8','B8A','B9','B11','B12','VV','VH','elevation','slope'];
+
 
 var roi = LL;
 //ESA 10m
@@ -41,7 +141,7 @@ var generateGrid = function(xmin, ymin, xmax, ymax, dx, dy) {
       var y1 = ee.Number(y);
       var y2 = ee.Number(y).add(ee.Number(dy));
       var coords = ee.List([x1, y1, x2, y2]);
-      var rect = ee.Algorithms.GeometryConstructors.Rectangle(coords);   //Generate Rectangle
+      var rect = ee.Algorithms.GeometryConstructors.Rectangle(coords);   //生成矩形
       return ee.Feature(rect);
     });
   }).flatten();   //变成单个数组
@@ -56,14 +156,10 @@ var ymin = ee.List(coords.get(0)).get(1);
 var xmax = ee.List(coords.get(2)).get(0);
 var ymax = ee.List(coords.get(2)).get(1);
 
-// var dx = (ee.Number(xmax).subtract(xmin)).divide(4); //4
-// var dy = (ee.Number(ymax).subtract(ymin)).divide(5);
 var dx = 1;
 var dy = 1;
-// print("dx, dy", dx, dy);
 
-
-var grid = generateGrid(xmin, ymin, xmax, ymax, dx, dy);    //Setting parameters and generating grids
+var grid = generateGrid(xmin, ymin, xmax, ymax, dx, dy);    //设置参数，生成格网
 var grid = grid.filterBounds(roi); // filter out out-of-boundary tiles
 
 print(grid.size());
@@ -75,7 +171,7 @@ var gridSize = grid.size().getInfo();
 var gridList = grid.toList(gridSize);
 
 
-//*******************************************************************piecemeal sampling
+//*******************************************************************分块抽样 
 
 var Grassland_sample0=ee.FeatureCollection(ee.Feature(null))
 var foret_sample0=ee.FeatureCollection(ee.Feature(null))
@@ -118,33 +214,29 @@ var Grassland_and = Grassland_CLCD_2015.and(Grassland_CLCD_2020).and(Grassland_E
 
 var Grassland1 = Grassland_and.clip(roi_tmp).rename('Grassland')
                                   .set('system:footprint', roi_tmp.geometry());
-
-// Define a kernel representing the center pixel and its 8 neighbors
-var kernel = ee.Kernel.fixed(3, 3, [[1, 1, 1], [1, 1, 1], [1, 1, 1]]);
-
-// Define a function to classify pixels based on the kernel
-var classifyCenterPixels = function(image) {
-  var centerPixel = image.reduceNeighborhood({
-    reducer: ee.Reducer.first(),
-    kernel: kernel,
+                                  
+                                  
+                                  
+  var Grassland_sample = Grassland1.selfMask().stratifiedSample({
+    numPoints: 100,
+    classBand: 'Grassland',
+    geometries: true
   });
-  var mask = centerPixel.neq(0).and(centerPixel.eq(image));
-  return image.updateMask(mask);
-};
+  var Grassland_sample = Grassland_sample.map(function (fea) {
+    return fea.set('landcover', 0)
+      .set('centerLon', fea.geometry().coordinates().get(0)) // 添加中心像元的经度
+      .set('centerLat', fea.geometry().coordinates().get(1)); // 添加中心像元的纬度
+  });
 
-// Apply the classification function to the forest image
-var classified_Grassland = classifyCenterPixels(Grassland1);
+  // Check the 3x3 neighborhood
+  var samplesInNeighborhood = Grassland_sample.filterBounds(roi_tmp);
+  var centerPixel = samplesInNeighborhood.filterMetadata('centerLon', 'equals', Grassland_sample.first().get('centerLon'))
+    .filterMetadata('centerLat', 'equals', Grassland_sample.first().get('centerLat')).first();
 
-// Generate stratified samples from the classified forest image
-var Grassland_sample = classified_Grassland.stratifiedSample({
-  numPoints: 100,
-  classBand: 'Grassland',
-  geometries: true
-});
-
-var Grassland_sample = Grassland_sample.map(function(fea) {
-  return fea.set('landcover', 0);
-});
+  if (samplesInNeighborhood.size().eq(9).and(samplesInNeighborhood.aggregate_count_distinct('Grassland').eq(1))) {
+    // 添加中心像素到特征集合
+    Grassland_sample0 = Grassland_sample0.merge(Grassland_sample);
+  }
 
 // //-----------------------------------------------forest
 
@@ -160,33 +252,27 @@ var foret1 = foret_and.clip(roi_tmp).rename('forest')
                                   .set('system:footprint',roi_tmp.geometry());
                                   
 
-// Define a kernel representing the center pixel and its 8 neighbors
-var kernel = ee.Kernel.fixed(3, 3, [[1, 1, 1], [1, 1, 1], [1, 1, 1]]);
-
-// Define a function to classify pixels based on the kernel
-var classifyCenterPixels = function(image) {
-  var centerPixel = image.reduceNeighborhood({
-    reducer: ee.Reducer.first(),
-    kernel: kernel,
+  var foret_sample = foret1.selfMask().stratifiedSample({
+    numPoints: 100,
+    classBand: 'forest',
+    geometries: true
   });
-  var mask = centerPixel.neq(0).and(centerPixel.eq(image));
-  return image.updateMask(mask);
-};
+  var foret_sample = foret_sample.map(function (fea) {
+    return fea.set('landcover', 1)
+      .set('centerLon', fea.geometry().coordinates().get(0)) // 添加中心像元的经度
+      .set('centerLat', fea.geometry().coordinates().get(1)); // 添加中心像元的纬度
+  });
 
-// Apply the classification function to the forest image
-var classified_forest = classifyCenterPixels(foret1);
+  // Check the 3x3 neighborhood
+  var samplesInNeighborhood = foret_sample.filterBounds(roi_tmp);
+  var centerPixel = samplesInNeighborhood.filterMetadata('centerLon', 'equals', foret_sample.first().get('centerLon'))
+    .filterMetadata('centerLat', 'equals', foret_sample.first().get('centerLat')).first();
 
-// Generate stratified samples from the classified forest image
-var foret_sample = classified_forest.stratifiedSample({
-  numPoints: 100,
-  classBand: 'forest',
-  geometries: true
-});
+  if (samplesInNeighborhood.size().eq(9).and(samplesInNeighborhood.aggregate_count_distinct('forest').eq(1))) {
+    // 添加中心像素到特征集合
+    foret_sample0 = foret_sample0.merge(foret_sample);
+  }
 
-var foret_sample = foret_sample.map(function(fea) {
-  return fea.set('landcover', 1);
-});
-                                  
 
 // //-----------------------------------------------Cropland
 
@@ -201,30 +287,26 @@ var cropland_and = cropland_CLCD_2015.and(cropland_CLCD_2020).and(cropland_ESA).
 var cropland1 = cropland_and.clip(roi_tmp).rename('Cropland')
                                   .set('system:footprint',roi_tmp.geometry());
 
-// Define a kernel representing the center pixel and its 8 neighbors
-var kernel = ee.Kernel.fixed(3, 3, [[1, 1, 1], [1, 1, 1], [1, 1, 1]]);
-
-// Define a function to classify pixels based on the kernel
-var classifyCenterPixels = function(image) {
-  var centerPixel = image.reduceNeighborhood({
-    reducer: ee.Reducer.first(),
-    kernel: kernel,
+  var cropland_sample = cropland1.selfMask().stratifiedSample({
+    numPoints: 100,
+    classBand: 'Cropland',
+    geometries: true
   });
-  var mask = centerPixel.neq(0).and(centerPixel.eq(image));
-  return image.updateMask(mask);
-};
+  var cropland_sample = cropland_sample.map(function (fea) {
+    return fea.set('landcover', 2)
+      .set('centerLon', fea.geometry().coordinates().get(0)) // 添加中心像元的经度
+      .set('centerLat', fea.geometry().coordinates().get(1)); // 添加中心像元的纬度
+  });
 
-// Apply the classification function to the forest image
-var classified_cropland = classifyCenterPixels(cropland1);
+  // Check the 3x3 neighborhood
+  var samplesInNeighborhood = cropland_sample.filterBounds(roi_tmp);
+  var centerPixel = samplesInNeighborhood.filterMetadata('centerLon', 'equals', cropland_sample.first().get('centerLon'))
+    .filterMetadata('centerLat', 'equals', cropland_sample.first().get('centerLat')).first();
 
-var cropland_sample = classified_cropland.selfMask().stratifiedSample({
-  numPoints:100,
-  classBand:'Cropland',
-  geometries:true
-});
-var cropland_sample = cropland_sample.map(function(fea){
-  return fea.set('landcover',2)
-});
+  if (samplesInNeighborhood.size().eq(9).and(samplesInNeighborhood.aggregate_count_distinct('Cropland').eq(1))) {
+    // 添加中心像素到特征集合
+    cropland_sample0 = cropland_sample0.merge(cropland_sample);
+  }
 
 // // // //-----------------------------------------------Water
 
@@ -240,32 +322,28 @@ var water1 = water_and.clip(roi_tmp).rename('Water')
                                   .set('system:footprint',roi_tmp.geometry());
 
 
-
-// Define a kernel representing the center pixel and its 8 neighbors
-var kernel = ee.Kernel.fixed(3, 3, [[1, 1, 1], [1, 1, 1], [1, 1, 1]]);
-
-// Define a function to classify pixels based on the kernel
-var classifyCenterPixels = function(image) {
-  var centerPixel = image.reduceNeighborhood({
-    reducer: ee.Reducer.first(),
-    kernel: kernel,
+  var water_sample = water1.selfMask().stratifiedSample({
+    numPoints: 100,
+    classBand: 'Water',
+    geometries: true
   });
-  var mask = centerPixel.neq(0).and(centerPixel.eq(image));
-  return image.updateMask(mask);
-};
+  var water_sample = water_sample.map(function (fea) {
+    return fea.set('landcover', 3)
+      .set('centerLon', fea.geometry().coordinates().get(0)) // 添加中心像元的经度
+      .set('centerLat', fea.geometry().coordinates().get(1)); // 添加中心像元的纬度
+  });
 
-// Apply the classification function to the forest image
-var classified_water = classifyCenterPixels(water1);
+  // Check the 3x3 neighborhood
+  var samplesInNeighborhood = water_sample.filterBounds(roi_tmp);
+  var centerPixel = samplesInNeighborhood.filterMetadata('centerLon', 'equals', water_sample.first().get('centerLon'))
+    .filterMetadata('centerLat', 'equals', water_sample.first().get('centerLat')).first();
 
-var water_sample = classified_water.selfMask().stratifiedSample({
-  numPoints:100,
-  classBand:'Water',
-  geometries:true
-});
-var water_sample = water_sample.map(function(fea){
-  return fea.set('landcover',3)
-});
-// Map.addLayer(water_sample)
+  if (samplesInNeighborhood.size().eq(9).and(samplesInNeighborhood.aggregate_count_distinct('Water').eq(1))) {
+    // 添加中心像素到特征集合
+    water_sample0 = water_sample0.merge(water_sample);
+  }
+
+
 // // //-----------------------------------------------urban
 
 var urban_CLCD_2020 = CLCD_2020.eq(8);
@@ -280,31 +358,27 @@ var urban1 = urban_and.clip(roi_tmp).rename('urban')
                                   .set('system:footprint',roi_tmp.geometry());
 
 
-// Define a kernel representing the center pixel and its 8 neighbors
-var kernel = ee.Kernel.fixed(3, 3, [[1, 1, 1], [1, 1, 1], [1, 1, 1]]);
-
-// Define a function to classify pixels based on the kernel
-var classifyCenterPixels = function(image) {
-  var centerPixel = image.reduceNeighborhood({
-    reducer: ee.Reducer.first(),
-    kernel: kernel,
+  var urban_sample = urban1.selfMask().stratifiedSample({
+    numPoints: 100,
+    classBand: 'urban',
+    geometries: true
   });
-  var mask = centerPixel.neq(0).and(centerPixel.eq(image));
-  return image.updateMask(mask);
-};
+  var urban_sample = urban_sample.map(function (fea) {
+    return fea.set('landcover', 4)
+      .set('centerLon', fea.geometry().coordinates().get(0)) // 添加中心像元的经度
+      .set('centerLat', fea.geometry().coordinates().get(1)); // 添加中心像元的纬度
+  });
 
-// Apply the classification function to the forest image
-var classified_urban = classifyCenterPixels(urban1);
+  // Check the 3x3 neighborhood
+  var samplesInNeighborhood = urban_sample.filterBounds(roi_tmp);
+  var centerPixel = samplesInNeighborhood.filterMetadata('centerLon', 'equals', urban_sample.first().get('centerLon'))
+    .filterMetadata('centerLat', 'equals', urban_sample.first().get('centerLat')).first();
 
+  if (samplesInNeighborhood.size().eq(9).and(samplesInNeighborhood.aggregate_count_distinct('urban').eq(1))) {
+    // 添加中心像素到特征集合
+    urban_sample0 = urban_sample0.merge(urban_sample);
+  }
 
-var urban_sample = classified_urban.selfMask().stratifiedSample({
-  numPoints:100,
-  classBand:'urban',
-  geometries:true
-});
-var urban_sample = urban_sample.map(function(fea){
-  return fea.set('landcover',4)
-});
 
 // // //-----------------------------------------------Shrubland
 
@@ -319,30 +393,28 @@ var Shrubland_and = (Shrubland_CLCD_2015.and(Shrubland_CLCD_2020).or(Shrubland_E
 var Shrubland1 = Shrubland_and.clip(roi_tmp).rename('Shrubland')
                                   .set('system:footprint',roi_tmp.geometry());
 
-// Define a kernel representing the center pixel and its 8 neighbors
-var kernel = ee.Kernel.fixed(3, 3, [[1, 1, 1], [1, 1, 1], [1, 1, 1]]);
 
-// Define a function to classify pixels based on the kernel
-var classifyCenterPixels = function(image) {
-  var centerPixel = image.reduceNeighborhood({
-    reducer: ee.Reducer.first(),
-    kernel: kernel,
+  var Shrubland_sample = Shrubland1.selfMask().stratifiedSample({
+    numPoints: 100,
+    classBand: 'Shrubland',
+    geometries: true
   });
-  var mask = centerPixel.neq(0).and(centerPixel.eq(image));
-  return image.updateMask(mask);
-};
+  var Shrubland_sample = Shrubland_sample.map(function (fea) {
+    return fea.set('landcover', 5)
+      .set('centerLon', fea.geometry().coordinates().get(0)) // 添加中心像元的经度
+      .set('centerLat', fea.geometry().coordinates().get(1)); // 添加中心像元的纬度
+  });
 
-// Apply the classification function to the forest image
-var classified_Shrubland1 = classifyCenterPixels(Shrubland1);
+  // Check the 3x3 neighborhood
+  var samplesInNeighborhood = Shrubland_sample.filterBounds(roi_tmp);
+  var centerPixel = samplesInNeighborhood.filterMetadata('centerLon', 'equals', Shrubland_sample.first().get('centerLon'))
+    .filterMetadata('centerLat', 'equals', Shrubland_sample.first().get('centerLat')).first();
 
-var Shrubland_sample = classified_Shrubland1.selfMask().stratifiedSample({
-  numPoints:100,
-  classBand:'Shrubland',
-  geometries:true
-});
-var Shrubland_sample = Shrubland_sample.map(function(fea){
-  return fea.set('landcover',5)
-});
+  if (samplesInNeighborhood.size().eq(9).and(samplesInNeighborhood.aggregate_count_distinct('Shrubland').eq(1))) {
+    // 添加中心像素到特征集合
+    Shrubland_sample0 = Shrubland_sample0.merge(Shrubland_sample);
+  }
+
 // Map.addLayer(Shrubland_sample);
 // // //-----------------------------------------------other
 var other_FROM1 = from_cld.eq(7);
@@ -372,53 +444,29 @@ var other_and = other_CLCD_2015.and(other_CLCD_2020).and(other_FROM).and(other_E
 var other1 = other_and.clip(roi_tmp).rename('other')
                                   .set('system:footprint',roi_tmp.geometry());
 
-// Define a kernel representing the center pixel and its 8 neighbors
-var kernel = ee.Kernel.fixed(3, 3, [[1, 1, 1], [1, 1, 1], [1, 1, 1]]);
 
-// Define a function to classify pixels based on the kernel
-var classifyCenterPixels = function(image) {
-  var centerPixel = image.reduceNeighborhood({
-    reducer: ee.Reducer.first(),
-    kernel: kernel,
+  var other_sample = other1.selfMask().stratifiedSample({
+    numPoints: 100,
+    classBand: 'other',
+    geometries: true
   });
-  var mask = centerPixel.neq(0).and(centerPixel.eq(image));
-  return image.updateMask(mask);
-};
+  var other_sample = other_sample.map(function (fea) {
+    return fea.set('landcover', 6)
+      .set('centerLon', fea.geometry().coordinates().get(0)) // 添加中心像元的经度
+      .set('centerLat', fea.geometry().coordinates().get(1)); // 添加中心像元的纬度
+  });
 
-// Apply the classification function to the forest image
-var classified_other = classifyCenterPixels(other1);
+  // Check the 3x3 neighborhood
+  var samplesInNeighborhood = other_sample.filterBounds(roi_tmp);
+  var centerPixel = samplesInNeighborhood.filterMetadata('centerLon', 'equals', other_sample.first().get('centerLon'))
+    .filterMetadata('centerLat', 'equals', other_sample.first().get('centerLat')).first();
 
-var other_sample = classified_other.selfMask().stratifiedSample({
-  numPoints:100,
-  classBand:'other',
-  geometries:true
-});
-var other_sample = other_sample.map(function(fea){
-  return fea.set('landcover',6)
-})
-
-///Combined sample
-var Grassland_sample0=Grassland_sample0.merge(Grassland_sample)
-var foret_sample0=foret_sample0.merge(foret_sample)
-var cropland_sample0=cropland_sample0.merge(cropland_sample)
-var water_sample0=water_sample0.merge(water_sample)
-var urban_sample0=urban_sample0.merge(urban_sample)
-var Shrubland_sample0=Shrubland_sample0.merge(Shrubland_sample)
-var other_sample0=other_sample0.merge(other_sample)
-
+  if (samplesInNeighborhood.size().eq(9).and(samplesInNeighborhood.aggregate_count_distinct('other').eq(1))) {
+    // 添加中心像素到特征集合
+    other_sample0 = other_sample0.merge(other_sample);
+  }
 }
 
-
 var samples = ee.FeatureCollection([Grassland_sample0,foret_sample0,cropland_sample0,water_sample0,urban_sample0,Shrubland_sample0,other_sample0,ot1]).flatten();
-
-
-Map.addLayer(Grassland_and.selfMask(), {'palette':['#73d662']},'Grassland_and',false);
-Map.addLayer(foret_and.selfMask(), {'palette':['green']},'foret_and',false);
-Map.addLayer(cropland_and.selfMask(), {'palette':['yellow']},'cropland_and',false);
-Map.addLayer(urban_and.selfMask(), {'palette':['red']},'urban_and',false);
-Map.addLayer(Shrubland_and.selfMask(), {'palette':['#6dd6be']},'Shrubland_and',false);
-Map.addLayer(other_and.selfMask(), {'palette':['grey']},'other_and',false);
-Map.addLayer(water_and.selfMask(), {'palette':['#3584d6']},'water_and',false);
-Map.addLayer(Grassland_sample0, {'color': 'green'}, 'foret_and');
-print('samples',samples.size());
+print('sample',samples.size());
 
