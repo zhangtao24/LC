@@ -2,7 +2,6 @@ var roi = LL;
 function rmS2cloud(image) {
   var qa = image.select('QA60');
 
-//去云 
   var cloudBitMask = 1 << 10;
   var cirrusBitMask = 1 << 11;
 
@@ -14,8 +13,6 @@ function rmS2cloud(image) {
               .copyProperties(image, ["system:time_start", "system:time_end"])
 }
 
-var S2_BANDS  = ['B2',   'B3',    'B4',  'B8',  'B11',   'B12']; // Sentinel-2
-
 var S2Collection = ee.ImageCollection('COPERNICUS/S2_SR')//.filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE',50))
                 .filterDate('2020-01-01', '2020-12-31')
                 .filterBounds(roi)
@@ -25,9 +22,23 @@ var S2Collection = ee.ImageCollection('COPERNICUS/S2_SR')//.filter(ee.Filter.lt(
                 
 var LL_clipped = S2Collection.clipToCollection(LL);
 
-Map.addLayer(LL_clipped, {'min':0,'max':3000,'bands':['B4','B3','B2']},'S2Collection');
-Map.addLayer(LL,{"color":'Grey',},'Region',false);
+//******************************************************************B8纹理 
+var compositeINT = LL_clipped.multiply(2).subtract(0.12).multiply(255);
+var toBytes = compositeINT.toByte();
+//print(toBytes);
 
+//选择近红外波段B8，glcm相当于纹理的数据集，从中选取典型纹理信息
+// Get the NIR band.
+var nir = toBytes.select('B8');
+var glcm = nir.glcmTexture({size: 4});
+//print(glcm);
+//从glcm中选择信息，如下
+var B8_contrast = glcm.select('B8_contrast');  //对比度 
+var B8_asm = glcm.select('B8_asm');    //角二阶矩 
+var B8_ent = glcm.select('B8_ent');    //熵 
+var B8_corr = glcm.select('B8_corr');  //相关性
+
+//******************************************************************zhishu 
   var NDVI = LL_clipped.normalizedDifference(['B8', 'B4']).rename ('NDVI');
 
   var EVI = LL_clipped.expression('2.5 * ((NIR - RED) / (NIR + 6 * RED - 7.5 * BLUE + 10000))', {
@@ -61,27 +72,44 @@ var SAVI = LL_clipped.expression(
              
 var collectionS1=ee.ImageCollection('COPERNICUS/S1_GRD')
 .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
-
 .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VH'));
-
 var collectionS1_IW=collectionS1
-
 .filterBounds(LL)
-
 .filterMetadata('instrumentMode','equals','IW')
-
 .filterDate('2020-01-01', '2020-12-31');
-
 var Sentinel_1=collectionS1_IW.median().clip(LL);
 
-//获取SRTMGL1_003 数据
+//******************************************************************VV/VH纹理 
+var input = Sentinel_1.divide(11/51).add(2040/11).toUint16();
+var glcm = input.glcmTexture({size: 3});
+print('glcm', glcm);
+
+var VV= input.reduceNeighborhood({
+  reducer: ee.Reducer.mean(),
+  kernel: ee.Kernel.square(3),
+});
+var VV_contrast = glcm.select('VV_contrast');  //对比度 
+var VV_asm = glcm.select('VV_asm');    //角二阶矩 
+var VV_ent = glcm.select('VV_ent');    //熵 
+var VV_corr = glcm.select('VV_corr');  //相关性
+
+var VH= input.reduceNeighborhood({
+  reducer: ee.Reducer.mean(),
+  kernel: ee.Kernel.square(3),
+});
+//从glcm中选择信息，如下
+var VH_contrast = glcm.select('VH_contrast');  //对比度 
+var VH_asm = glcm.select('VH_asm');    //角二阶矩 
+var VH_ent = glcm.select('VH_ent');    //熵 
+var VH_corr = glcm.select('VH_corr');  //相关性
+
+//**************************************************************获取SRTMGL1_003 数据
 var dataset = ee.Image('USGS/SRTMGL1_003')
                 .clip(roi);
 var terrain = ee.Algorithms.Terrain(dataset);
 
-
 var LL_clipped1=ee.Image.cat([LL_clipped,terrain,Sentinel_1]).float().clip(LL)
-       
+
 var composite_add = LL_clipped1.addBands(NDVI)
                                 .addBands(NDWI)
                                 .addBands(LSWI)
@@ -92,14 +120,20 @@ var composite_add = LL_clipped1.addBands(NDVI)
                                 .addBands(NDWI1)
                                 .addBands(MNDWI)
                                 .addBands(SAVI)
-
+                                .addBands(B8_contrast)
+                                .addBands(B8_asm)
+                                .addBands(B8_ent)
+                                .addBands(B8_corr)
+                                .addBands(VV_contrast)
+                                .addBands(VV_asm)
+                                .addBands(VV_ent).addBands(VV_corr)
+                                .addBands(VH_contrast).addBands(VH_asm)
+                                .addBands(VH_ent).addBands(VH_corr)
 
 var bands = ['NDVI','NDWI','EVI','LSWI','NDBI','RVI','DVI','SAVI',
 'MNDWI','B1','B2', 'B3', 'B4', 'B5', 'B6', 
 'B7','B8','B8A','B9','B11','B12','VV','VH','elevation','slope'];
 
-
-var roi = LL;
 //ESA 10m
 var dataset = ee.ImageCollection("ESA/WorldCover/v100").first();
 var dataset1 = dataset.clip(LL);
@@ -170,9 +204,7 @@ var gridSize = grid.size().getInfo();
 // print("gridSize size:", gridSize);
 var gridList = grid.toList(gridSize);
 
-
 //*******************************************************************分块抽样 
-
 var Grassland_sample0=ee.FeatureCollection(ee.Feature(null))
 var foret_sample0=ee.FeatureCollection(ee.Feature(null))
 var cropland_sample0=ee.FeatureCollection(ee.Feature(null))
@@ -180,7 +212,6 @@ var water_sample0=ee.FeatureCollection(ee.Feature(null))
 var other_sample0=ee.FeatureCollection(ee.Feature(null))
 var urban_sample0=ee.FeatureCollection(ee.Feature(null))
 var Shrubland_sample0=ee.FeatureCollection(ee.Feature(null))
-//
 
 for(var i=0; i<gridSize; i++){
 
@@ -213,10 +244,7 @@ var Grassland_FROM = from_cld.eq(3);
 var Grassland_and = Grassland_CLCD_2015.and(Grassland_CLCD_2020).and(Grassland_ESA.or(Grassland_ESRI)).and(Grassland_FROM);
 
 var Grassland1 = Grassland_and.clip(roi_tmp).rename('Grassland')
-                                  .set('system:footprint', roi_tmp.geometry());
-                                  
-                                  
-                                  
+                                  .set('system:footprint', roi_tmp.geometry());   
   var Grassland_sample = Grassland1.selfMask().stratifiedSample({
     numPoints: 100,
     classBand: 'Grassland',
@@ -250,8 +278,6 @@ var foret_and = foret_CLCD_2015.and(foret_CLCD_2020).and(foret_ESA).and(foret_ES
 
 var foret1 = foret_and.clip(roi_tmp).rename('forest')
                                   .set('system:footprint',roi_tmp.geometry());
-                                  
-
   var foret_sample = foret1.selfMask().stratifiedSample({
     numPoints: 100,
     classBand: 'forest',
@@ -272,8 +298,6 @@ var foret1 = foret_and.clip(roi_tmp).rename('forest')
     // 添加中心像素到特征集合
     foret_sample0 = foret_sample0.merge(foret_sample);
   }
-
-
 // //-----------------------------------------------Cropland
 
 var cropland_CLCD_2020 = CLCD_2020.eq(1);
@@ -286,7 +310,6 @@ var cropland_and = cropland_CLCD_2015.and(cropland_CLCD_2020).and(cropland_ESA).
 
 var cropland1 = cropland_and.clip(roi_tmp).rename('Cropland')
                                   .set('system:footprint',roi_tmp.geometry());
-
   var cropland_sample = cropland1.selfMask().stratifiedSample({
     numPoints: 100,
     classBand: 'Cropland',
@@ -320,8 +343,6 @@ var water_and = water_ESA.and(water_FROM).and(water_ESRI).and(water_CLCD_2020).a
 
 var water1 = water_and.clip(roi_tmp).rename('Water')
                                   .set('system:footprint',roi_tmp.geometry());
-
-
   var water_sample = water1.selfMask().stratifiedSample({
     numPoints: 100,
     classBand: 'Water',
@@ -342,8 +363,6 @@ var water1 = water_and.clip(roi_tmp).rename('Water')
     // 添加中心像素到特征集合
     water_sample0 = water_sample0.merge(water_sample);
   }
-
-
 // // //-----------------------------------------------urban
 
 var urban_CLCD_2020 = CLCD_2020.eq(8);
@@ -356,8 +375,6 @@ var urban_and = urban_ESA.and(urban_ESRI).and(urban_FROM).and(urban_CLCD_2015);
 
 var urban1 = urban_and.clip(roi_tmp).rename('urban')
                                   .set('system:footprint',roi_tmp.geometry());
-
-
   var urban_sample = urban1.selfMask().stratifiedSample({
     numPoints: 100,
     classBand: 'urban',
@@ -368,7 +385,6 @@ var urban1 = urban_and.clip(roi_tmp).rename('urban')
       .set('centerLon', fea.geometry().coordinates().get(0)) // 添加中心像元的经度
       .set('centerLat', fea.geometry().coordinates().get(1)); // 添加中心像元的纬度
   });
-
   // Check the 3x3 neighborhood
   var samplesInNeighborhood = urban_sample.filterBounds(roi_tmp);
   var centerPixel = samplesInNeighborhood.filterMetadata('centerLon', 'equals', urban_sample.first().get('centerLon'))
@@ -378,10 +394,7 @@ var urban1 = urban_and.clip(roi_tmp).rename('urban')
     // 添加中心像素到特征集合
     urban_sample0 = urban_sample0.merge(urban_sample);
   }
-
-
 // // //-----------------------------------------------Shrubland
-
 var Shrubland_CLCD_2020 = CLCD_2020.eq(3);
 var Shrubland_CLCD_2015 = CLCD_2015.eq(3);
 var Shrubland_ESA = dataset1.eq(20);
@@ -392,8 +405,6 @@ var Shrubland_and = (Shrubland_CLCD_2015.and(Shrubland_CLCD_2020).or(Shrubland_E
 
 var Shrubland1 = Shrubland_and.clip(roi_tmp).rename('Shrubland')
                                   .set('system:footprint',roi_tmp.geometry());
-
-
   var Shrubland_sample = Shrubland1.selfMask().stratifiedSample({
     numPoints: 100,
     classBand: 'Shrubland',
@@ -443,8 +454,6 @@ var other_and = other_CLCD_2015.and(other_CLCD_2020).and(other_FROM).and(other_E
 
 var other1 = other_and.clip(roi_tmp).rename('other')
                                   .set('system:footprint',roi_tmp.geometry());
-
-
   var other_sample = other1.selfMask().stratifiedSample({
     numPoints: 100,
     classBand: 'other',
@@ -455,7 +464,6 @@ var other1 = other_and.clip(roi_tmp).rename('other')
       .set('centerLon', fea.geometry().coordinates().get(0)) // 添加中心像元的经度
       .set('centerLat', fea.geometry().coordinates().get(1)); // 添加中心像元的纬度
   });
-
   // Check the 3x3 neighborhood
   var samplesInNeighborhood = other_sample.filterBounds(roi_tmp);
   var centerPixel = samplesInNeighborhood.filterMetadata('centerLon', 'equals', other_sample.first().get('centerLon'))
@@ -466,7 +474,6 @@ var other1 = other_and.clip(roi_tmp).rename('other')
     other_sample0 = other_sample0.merge(other_sample);
   }
 }
-
 var samples = ee.FeatureCollection([Grassland_sample0,foret_sample0,cropland_sample0,water_sample0,urban_sample0,Shrubland_sample0,other_sample0,ot1]).flatten();
 print('sample',samples.size());
 
